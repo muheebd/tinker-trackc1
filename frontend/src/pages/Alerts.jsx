@@ -5,10 +5,12 @@ import { useApp } from '../context.jsx';
 const SEVERITY_STYLE = {
   high: 'bg-red-50 border-red-200',
   medium: 'bg-amber-50 border-amber-200',
+  low: 'bg-brand-light border-brand',
 };
 const SEVERITY_DOT = {
   high: 'bg-red-500',
   medium: 'bg-amber-500',
+  low: 'bg-brand',
 };
 
 export default function Alerts() {
