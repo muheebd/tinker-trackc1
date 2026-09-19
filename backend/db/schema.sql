@@ -77,3 +77,31 @@ CREATE TABLE alerts (
   created_ts TEXT NOT NULL,
   closed_ts TEXT
 );
+
+-- Two further additions, built to answer real reviewer feedback: shift
+-- substitution (a colleague covering someone's shift) and cross-department
+-- consults (a referral). Neither changes decide()'s five checks into a
+-- bypass — a shift cover writes a REAL row into the existing shifts and
+-- assignments tables, so it is evaluated by the normal checks like anyone
+-- else's shift. A referral is a second legitimate source of "treatment
+-- relationship" alongside encounters, checked explicitly in decide().
+
+CREATE TABLE shift_covers (
+  id INTEGER PRIMARY KEY,
+  covering_staff_id INTEGER NOT NULL REFERENCES staff(id),
+  absent_staff_id INTEGER NOT NULL REFERENCES staff(id),
+  ward_id INTEGER NOT NULL REFERENCES wards(id),
+  shift_start TEXT NOT NULL,
+  shift_end TEXT NOT NULL,
+  created_ts TEXT NOT NULL
+);
+
+CREATE TABLE consult_referrals (
+  id INTEGER PRIMARY KEY,
+  patient_id INTEGER NOT NULL REFERENCES patients(id),
+  referring_staff_id INTEGER NOT NULL REFERENCES staff(id),
+  target_ward_id INTEGER NOT NULL REFERENCES wards(id),
+  note TEXT,
+  created_ts TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);

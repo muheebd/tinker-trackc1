@@ -40,13 +40,19 @@ function runDetector(db) {
     if (staffAsPatient) detail += ' The patient shares a name with a staff member — possible staff-as-patient access.';
     if (row.reason === 'break_glass_missing_note') detail += ' No justification note was recorded.';
 
+    // Code Blue overrides are treated as the most serious category —
+    // life-threatening emergencies get immediate high-severity review.
+    // The category is carried in the note field (see index.js), not a
+    // new column, since the contract's audit_log schema is fixed.
+    const isCodeBlue = (row.note || '').startsWith('Code Blue:');
+
     upsertAlert(db, {
       type: 'break_glass',
       staff_id: row.staff_id,
       patient_id: row.patient_id,
       audit_log_id: row.id,
-      detail,
-      severity: staffAsPatient ? 'high' : 'medium',
+      detail: isCodeBlue ? `CODE BLUE: ${detail}` : detail,
+      severity: staffAsPatient || isCodeBlue ? 'high' : 'medium',
     });
   }
 
@@ -84,6 +90,44 @@ function runDetector(db) {
       audit_log_id: null,
       detail: `${staff ? staff.name : `Staff #${row.staff_id}`} was denied access to ${row.cnt} patients with no treatment relationship.`,
       severity: 'high',
+    });
+  }
+
+  // 4. Shift substitutions — not an emergency, but worth a quick,
+  //    low-drama check from a head nurse that the swap was legitimate.
+  // Synthetic audit_log_id offset (1,000,000+) keeps each shift_covers
+  // row deduplicated independently — a real audit_log id will never
+  // reach that range in this demo.
+  const shiftCovers = db.prepare('SELECT * FROM shift_covers').all();
+  for (const row of shiftCovers) {
+    const covering = db.prepare('SELECT * FROM staff WHERE id = ?').get(row.covering_staff_id);
+    const absent = db.prepare('SELECT * FROM staff WHERE id = ?').get(row.absent_staff_id);
+    const ward = db.prepare('SELECT * FROM wards WHERE id = ?').get(row.ward_id);
+    upsertAlert(db, {
+      type: 'shift_cover',
+      staff_id: row.covering_staff_id,
+      patient_id: null,
+      audit_log_id: 1000000 + row.id,
+      detail: `${covering ? covering.name : `Staff #${row.covering_staff_id}`} is covering ${absent ? absent.name : `staff #${row.absent_staff_id}`}'s shift on ${ward ? ward.name : `ward #${row.ward_id}`}.`,
+      severity: 'medium',
+    });
+  }
+
+  // 5. Cross-department consults — routine and expected, logged for
+  //    visibility rather than review. Offset 2,000,000+ for the same
+  //    dedup reason as above.
+  const referrals = db.prepare('SELECT * FROM consult_referrals').all();
+  for (const row of referrals) {
+    const referring = db.prepare('SELECT * FROM staff WHERE id = ?').get(row.referring_staff_id);
+    const patient = db.prepare('SELECT * FROM patients WHERE id = ?').get(row.patient_id);
+    const ward = db.prepare('SELECT * FROM wards WHERE id = ?').get(row.target_ward_id);
+    upsertAlert(db, {
+      type: 'consult_referral',
+      staff_id: row.referring_staff_id,
+      patient_id: row.patient_id,
+      audit_log_id: 2000000 + row.id,
+      detail: `${referring ? referring.name : `Staff #${row.referring_staff_id}`} referred ${patient ? patient.name : `patient #${row.patient_id}`} to ${ward ? ward.name : `ward #${row.target_ward_id}`}, expires ${new Date(row.expires_at).toLocaleString()}.`,
+      severity: 'low',
     });
   }
 }

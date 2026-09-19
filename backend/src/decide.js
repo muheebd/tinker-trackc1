@@ -1,6 +1,13 @@
 // decide() — the access engine. One pure function, checked in order,
 // first failure short-circuits to DENY. See BUILD_CONTRACT.md for the
 // reason-code table this must match exactly.
+//
+// Extension: an active consult_referrals row is a second legitimate
+// source of "this access makes sense" alongside a direct encounter.
+// It is checked explicitly, in the open, as its own condition — never
+// a silent bypass. It can excuse a ward mismatch and a missing
+// encounter (checks 3 and 4); it never excuses an inactive account,
+// being off shift, or a role that doesn't permit the action.
 
 const CATEGORIES_BY_ROLE = {
   doctor: ['routine', 'sensitive', 'restricted'],
@@ -15,6 +22,18 @@ const ACTIONS_BY_ROLE = {
   clerk: ['view', 'search'],
   admin: ['search'],
 };
+
+function hasActiveReferral(db, patientId, staffId, nowIso) {
+  const row = db.prepare(`
+    SELECT cr.* FROM consult_referrals cr
+    WHERE cr.patient_id = ?
+      AND cr.expires_at >= ?
+      AND cr.target_ward_id IN (SELECT ward_id FROM assignments WHERE staff_id = ?)
+    ORDER BY cr.expires_at DESC
+    LIMIT 1
+  `).get(patientId, nowIso, staffId);
+  return row || null;
+}
 
 function decide(db, { staffId, patientId, action, now, breakGlass = false, note = null }) {
   const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId);
@@ -41,23 +60,29 @@ function decide(db, { staffId, patientId, action, now, breakGlass = false, note 
     return { outcome: 'DENY', reason: 'off_shift', categories: [] };
   }
 
-  // Check 3: patient is admitted to a ward in the caller's assignments
   const patient = db.prepare('SELECT * FROM patients WHERE id = ?').get(patientId);
   if (!patient || !patient.ward_id || patient.discharged) {
     return { outcome: 'DENY', reason: 'ward_mismatch', categories: [] };
   }
+
+  const referral = hasActiveReferral(db, patientId, staffId, nowIso);
+
+  // Check 3: patient is admitted to a ward in the caller's assignments
+  // — an active referral into the caller's own ward excuses a mismatch.
   const assigned = db.prepare(
     'SELECT 1 FROM assignments WHERE staff_id = ? AND ward_id = ?'
   ).get(staffId, patient.ward_id);
-  if (!assigned) {
+  if (!assigned && !referral) {
     return { outcome: 'DENY', reason: 'ward_mismatch', categories: [] };
   }
 
-  // Check 4: an open or recent encounter links the pair
+  // Check 4: an open or recent encounter links the pair — a referral
+  // stands in for this too, since the point of a referral is granting
+  // access *before* the receiving specialist has ever treated them.
   const encounter = db.prepare(
     'SELECT * FROM encounters WHERE staff_id = ? AND patient_id = ? ORDER BY start_ts DESC LIMIT 1'
   ).get(staffId, patientId);
-  if (!encounter) {
+  if (!encounter && !referral) {
     return { outcome: 'DENY', reason: 'no_treatment_relationship', categories: [] };
   }
 
@@ -69,8 +94,9 @@ function decide(db, { staffId, patientId, action, now, breakGlass = false, note 
 
   return {
     outcome: 'ALLOW',
-    reason: 'on_duty_treatment_relationship',
+    reason: referral && (!assigned || !encounter) ? 'referral_active' : 'on_duty_treatment_relationship',
     categories: CATEGORIES_BY_ROLE[staff.role] || ['routine'],
+    referral: referral || null,
   };
 }
 
